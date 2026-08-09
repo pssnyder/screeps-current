@@ -21,6 +21,7 @@ class ConsoleHelper {
         console.log('  telemetry(500)   - Rolling KPI summary from Memory stats');
         console.log('  spatial()        - Room layout/pathing efficiency snapshot');
         console.log('  releaseAudit()   - RCL milestone readiness audit');
+        console.log('  incidentModeStatus() - Recovery mode and anti-oscillation state');
         console.log('  creeps()         - List all creeps');
         console.log('  strategy()       - Show current strategy');
         console.log('');
@@ -125,6 +126,15 @@ class ConsoleHelper {
             for (const role in byRole) {
                 console.log(`     ${role}: ${byRole[role]}`);
             }
+
+            // Incident mode summary (recovery controller state)
+            const recoveryState = Memory.engine && Memory.engine.recoveryRooms ?
+                Memory.engine.recoveryRooms[roomName] : null;
+            const recoveryOn = !!(recoveryState && recoveryState.active);
+            const cooldownRemaining = recoveryState ? Math.max(0, (recoveryState.cooldownUntil || 0) - Game.time) : 0;
+            const upgraderCount = byRole.upgrader || 0;
+            const activeUpgraders = recoveryOn ? Math.min(1, upgraderCount) : upgraderCount;
+            console.log(`  🩺 Recovery: ${recoveryOn ? 'ON' : 'OFF'} | Cooldown: ${cooldownRemaining} | Active Upgraders: ${activeUpgraders}/${upgraderCount}`);
             
             // Defense
             const hostiles = room.find(FIND_HOSTILE_CREEPS);
@@ -368,6 +378,61 @@ class ConsoleHelper {
             }
         }
 
+        console.log('═══════════════════════════════════════════');
+    }
+
+    /**
+     * Show live incident/recovery mode state and guard rails.
+     */
+    static incidentModeStatus() {
+        console.log('═══════════════════════════════════════════');
+        console.log('🩺 INCIDENT MODE STATUS');
+        console.log('═══════════════════════════════════════════');
+
+        const recoveryMap = Memory.engine && Memory.engine.recoveryRooms ? Memory.engine.recoveryRooms : {};
+
+        for (const roomName in Game.rooms) {
+            const room = Game.rooms[roomName];
+            if (!room.controller || !room.controller.my) continue;
+
+            const state = recoveryMap[roomName] || {
+                active: false,
+                enteredAt: 0,
+                cooldownUntil: 0,
+                lowEnergyStreak: 0,
+                highEnergyStreak: 0,
+                reason: 'not initialized'
+            };
+
+            const energyPercent = room.energyCapacityAvailable > 0
+                ? room.energyAvailable / room.energyCapacityAvailable
+                : 0;
+
+            const spawnAndExt = room.find(FIND_MY_STRUCTURES, {
+                filter: s => s.structureType === STRUCTURE_SPAWN || s.structureType === STRUCTURE_EXTENSION
+            });
+
+            const totalCap = spawnAndExt.reduce((sum, s) => sum + s.store.getCapacity(RESOURCE_ENERGY), 0);
+            const totalEnergy = spawnAndExt.reduce((sum, s) => sum + s.store[RESOURCE_ENERGY], 0);
+            const fillRatio = totalCap > 0 ? totalEnergy / totalCap : 1;
+
+            const cooldownRemaining = Math.max(0, (state.cooldownUntil || 0) - Game.time);
+            const activeFor = state.active ? (Game.time - (state.enteredAt || Game.time)) : 0;
+
+            console.log(`\n${roomName} (RCL ${room.controller.level})`);
+            console.log(`  Recovery: ${state.active ? 'ON' : 'OFF'} | Reason: ${state.reason || 'n/a'}`);
+            console.log(`  Energy: ${room.energyAvailable}/${room.energyCapacityAvailable} (${(energyPercent * 100).toFixed(0)}%)`);
+            console.log(`  Spawn+Ext Fill: ${(fillRatio * 100).toFixed(0)}%`);
+            console.log(`  Low streak: ${state.lowEnergyStreak || 0} | High streak: ${state.highEnergyStreak || 0}`);
+            console.log(`  Active for: ${activeFor} ticks | Cooldown remaining: ${cooldownRemaining}`);
+
+            const currentHaulers = room.find(FIND_MY_CREEPS, { filter: c => c.memory.role === 'hauler' }).length;
+            const currentUpgraders = room.find(FIND_MY_CREEPS, { filter: c => c.memory.role === 'upgrader' }).length;
+            console.log(`  Roles: haulers=${currentHaulers}, upgraders=${currentUpgraders}`);
+        }
+
+        console.log('\nThresholds: enter<45% or <200 energy for 5 ticks | exit>80% and fill>85% for 20 ticks');
+        console.log('Guard: force disable on >95% energy and >95% fill for 10 ticks | cooldown 100 ticks');
         console.log('═══════════════════════════════════════════');
     }
 
@@ -805,6 +870,7 @@ global.ticks = () => ConsoleHelper.ticks();
 global.telemetry = (window) => ConsoleHelper.telemetry(window);
 global.spatial = (roomName) => ConsoleHelper.spatial(roomName);
 global.releaseAudit = () => ConsoleHelper.releaseAudit();
+global.incidentModeStatus = () => ConsoleHelper.incidentModeStatus();
 global.strategy = () => ConsoleHelper.strategy();
 global.creeps = () => ConsoleHelper.creeps();
 global.debug = () => ConsoleHelper.debug();

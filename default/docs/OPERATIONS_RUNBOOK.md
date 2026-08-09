@@ -55,6 +55,10 @@ If all look healthy, keep system in autonomous mode.
   - RCL milestone readiness per room
   - Checks extension/tower/link capacity plus storage/terminal/extractor/lab progress
 
+- `incidentModeStatus()`
+  - Shows recovery mode state, streak counters, cooldown, and anti-oscillation guard status
+  - Use to verify when incident mode enters/exits and why
+
 ### Expansion and scouting
 
 - `expand()`

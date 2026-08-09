@@ -11,8 +11,9 @@ class MemoryManager {
      * TIPS: "The more small objects in the Memory, the more CPU spent on its parsing."
      */
     static cleanDeadCreeps() {
-        // Clean every tick for immediate memory reclamation
-        // v3.0: Changed from every 10 ticks to every tick based on TIPS
+        // Throttle full memory scan to reduce CPU overhead in stable states.
+        // Deleted creep entries persist safely for a short interval.
+        if (Game.time % 20 !== 0) return;
         
         // Fast cleanup: only iterate Memory.creeps once
         for (const name in Memory.creeps) {

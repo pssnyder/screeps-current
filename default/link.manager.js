@@ -24,7 +24,7 @@ class LinkManager {
         
         // Categorize links by location
         const sourceLinks = [];
-        const spawnLinks = [];
+        const baseLinks = [];
         const controllerLinks = [];
         
         for (const link of links) {
@@ -34,12 +34,13 @@ class LinkManager {
             // Categorize by proximity
             const nearSources = link.pos.findInRange(FIND_SOURCES, 2);
             const nearSpawns = link.pos.findInRange(FIND_MY_SPAWNS, 3);
+            const nearStorage = room.storage ? link.pos.getRangeTo(room.storage) <= 3 : false;
             const nearController = link.pos.getRangeTo(room.controller);
             
             if (nearSources.length > 0) {
                 sourceLinks.push(link);
-            } else if (nearSpawns.length > 0) {
-                spawnLinks.push(link);
+            } else if (nearSpawns.length > 0 || nearStorage) {
+                baseLinks.push(link);
             } else if (nearController <= 3) {
                 controllerLinks.push(link);
             }
@@ -53,13 +54,13 @@ class LinkManager {
             // Find best receiving link
             let target = null;
             
-            // Priority 1: Spawn link (if low on energy)
-            if (spawnLinks.length > 0) {
-                const emptySpawnLinks = spawnLinks.filter(
+            // Priority 1: Base logistics links (spawn/storage adjacency)
+            if (baseLinks.length > 0) {
+                const emptyBaseLinks = baseLinks.filter(
                     l => l.store.getFreeCapacity(RESOURCE_ENERGY) >= 400
                 );
-                if (emptySpawnLinks.length > 0) {
-                    target = emptySpawnLinks[0];
+                if (emptyBaseLinks.length > 0) {
+                    target = emptyBaseLinks[0];
                 }
             }
             

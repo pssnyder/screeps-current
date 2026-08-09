@@ -26,6 +26,13 @@ class RoleUpgrader {
             creep.memory.working = true;
             creep.say('⚡ upgrade');
         }
+
+        // Recovery-mode governor: only one upgrader actively upgrades.
+        // Extra upgraders become emergency refuelers to accelerate economy recovery.
+        if (this.isRecoveryMode(creep.room) && !this.isPrimaryRecoveryUpgrader(creep)) {
+            this.recoverySupport(creep);
+            return;
+        }
         
         if (creep.memory.working) {
             this.upgrade(creep);
@@ -107,6 +114,49 @@ class RoleUpgrader {
                 reusePath: 10
             });
         }
+    }
+
+    static isRecoveryMode(room) {
+        if (!Memory.engine || !Memory.engine.recoveryRooms) return false;
+        return !!(Memory.engine.recoveryRooms[room.name] && Memory.engine.recoveryRooms[room.name].active);
+    }
+
+    static isPrimaryRecoveryUpgrader(creep) {
+        const upgraders = creep.room.find(FIND_MY_CREEPS, {
+            filter: c => c.memory.role === 'upgrader'
+        });
+
+        if (upgraders.length === 0) return true;
+
+        upgraders.sort((a, b) => a.name.localeCompare(b.name));
+        return upgraders[0].id === creep.id;
+    }
+
+    static recoverySupport(creep) {
+        if (creep.store[RESOURCE_ENERGY] === 0) {
+            this.collectEnergy(creep);
+            creep.say('🩺 collect');
+            return;
+        }
+
+        const target = creep.pos.findClosestByPath(FIND_MY_STRUCTURES, {
+            filter: s => (s.structureType === STRUCTURE_SPAWN || s.structureType === STRUCTURE_EXTENSION) &&
+                         s.store.getFreeCapacity(RESOURCE_ENERGY) > 0
+        });
+
+        if (!target) {
+            creep.say('🩺 hold');
+            return;
+        }
+
+        const result = creep.transfer(target, RESOURCE_ENERGY);
+        if (result === ERR_NOT_IN_RANGE) {
+            creep.moveTo(target, {
+                visualizePathStyle: { stroke: '#00ff00' },
+                reusePath: 12
+            });
+        }
+        creep.say('🩺 refuel');
     }
 }
 

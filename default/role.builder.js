@@ -27,6 +27,13 @@ class RoleBuilder {
             creep.memory.working = true;
             creep.say('🚧 build');
         }
+
+        // Emergency fallback: pause builder task allocation while economy is starved.
+        // Trigger: room energy below 100 until spawn+extensions are at least 50% full.
+        if (this.shouldPauseBuilding(creep.room)) {
+            this.emergencyRefuel(creep);
+            return;
+        }
         
         if (creep.memory.working) {
             this.build(creep);
@@ -50,14 +57,15 @@ class RoleBuilder {
             const sites = creep.room.find(FIND_CONSTRUCTION_SITES);
             
             if (sites.length > 0) {
-                // Prioritize: spawns, extensions, towers, roads, containers, walls
+                // Prioritize logistics-critical construction before roads.
                 const priority = {
                     [STRUCTURE_SPAWN]: 10,
                     [STRUCTURE_EXTENSION]: 9,
                     [STRUCTURE_TOWER]: 8,
+                    [STRUCTURE_LINK]: 8,
+                    [STRUCTURE_CONTAINER]: 8,
                     [STRUCTURE_STORAGE]: 7,
-                    [STRUCTURE_ROAD]: 6,
-                    [STRUCTURE_CONTAINER]: 5,
+                    [STRUCTURE_ROAD]: 4,
                     [STRUCTURE_RAMPART]: 4,
                     [STRUCTURE_WALL]: 3
                 };
@@ -166,6 +174,52 @@ class RoleBuilder {
                 reusePath: 10
             });
         }
+    }
+
+    /**
+     * Pause builder construction during critical room starvation.
+     */
+    static shouldPauseBuilding(room) {
+        const hasCriticalEnergy = room.energyAvailable >= 100;
+        const spawnAndExt = room.find(FIND_MY_STRUCTURES, {
+            filter: s => s.structureType === STRUCTURE_SPAWN || s.structureType === STRUCTURE_EXTENSION
+        });
+
+        const totalCap = spawnAndExt.reduce((sum, s) => sum + s.store.getCapacity(RESOURCE_ENERGY), 0);
+        const totalEnergy = spawnAndExt.reduce((sum, s) => sum + s.store[RESOURCE_ENERGY], 0);
+        const fillRatio = totalCap > 0 ? (totalEnergy / totalCap) : 1;
+
+        return !hasCriticalEnergy || fillRatio < 0.5;
+    }
+
+    /**
+     * In incident mode, builders behave like emergency refuelers.
+     */
+    static emergencyRefuel(creep) {
+        if (creep.store[RESOURCE_ENERGY] === 0) {
+            this.collectEnergy(creep);
+            creep.say('🩺 collect');
+            return;
+        }
+
+        const target = creep.pos.findClosestByPath(FIND_MY_STRUCTURES, {
+            filter: s => (s.structureType === STRUCTURE_SPAWN || s.structureType === STRUCTURE_EXTENSION) &&
+                         s.store.getFreeCapacity(RESOURCE_ENERGY) > 0
+        });
+
+        if (!target) {
+            creep.say('🩺 hold');
+            return;
+        }
+
+        const result = creep.transfer(target, RESOURCE_ENERGY);
+        if (result === ERR_NOT_IN_RANGE) {
+            creep.moveTo(target, {
+                visualizePathStyle: { stroke: '#ffaa00' },
+                reusePath: 10
+            });
+        }
+        creep.say('🩺 refuel');
     }
 }
 

@@ -53,8 +53,12 @@ class DecisionTree {
         const avgRoomLevel = Object.values(gameState.rooms).reduce(
             (sum, room) => sum + (room.control && room.control.level ? room.control.level : 0), 0
         ) / Object.keys(gameState.rooms).length;
+
+        const recoveryActive = this.anyRecoveryActive();
         
-        if (avgRoomLevel < 4) {
+        if (recoveryActive) {
+            priorities.push({ type: 'ECONOMY', weight: 10 });
+        } else if (avgRoomLevel < 4) {
             priorities.push({ type: 'ECONOMY', weight: 8 });
         } else {
             priorities.push({ type: 'ECONOMY', weight: 5 });
@@ -63,7 +67,7 @@ class DecisionTree {
         // Upgrade priority based on controller level
         priorities.push({ 
             type: 'UPGRADE', 
-            weight: avgRoomLevel < 8 ? 7 : 9 
+            weight: recoveryActive ? 3 : (avgRoomLevel < 8 ? 7 : 9)
         });
         
         // Building priority if construction sites exist
@@ -101,6 +105,9 @@ class DecisionTree {
                 roomEval.resources.sources.length : 2;
             const rcl = room ? room.controller.level : 1;
             const energyPercent = room ? (room.energyAvailable / room.energyCapacityAvailable) : 0;
+            const recovery = room ? this.updateRecoveryState(room, rcl) : { active: false, emergency: false, stateChanged: false };
+            const isEmergencyEnergy = recovery.emergency;
+            const isRecoveryMode = recovery.active;
             
             // v2.0.3: Smart creep composition based on RCL and energy state
             // At RCL 4+, we have containers - need more haulers, fewer harvesters
@@ -133,6 +140,12 @@ class DecisionTree {
             } else if (rcl >= 2) {
                 targetHaulers = 1; // 1 hauler at RCL 2-3
             }
+
+            // Emergency logistics recovery: force two additional haulers immediately.
+            // This creates a near-term delivery burst for long-haul source routes.
+            if (isRecoveryMode) {
+                targetHaulers = Math.max(targetHaulers, (creepCounts.hauler || 0) + 2);
+            }
             
             // Builder count: scale with construction sites and energy
             const sites = room ? room.find(FIND_MY_CONSTRUCTION_SITES).length : 0;
@@ -153,6 +166,11 @@ class DecisionTree {
                 targetUpgraders = 4; // More upgraders at higher RCL
             } else if (energyPercent < 0.3 && rcl <= 3) {
                 targetUpgraders = 2; // Low energy early game: fewer upgraders
+            }
+
+            // Recovery mode: throttle upgraders until room energy buffer recovers.
+            if (isRecoveryMode) {
+                targetUpgraders = 1;
             }
             
             // v3.0: Miner count for mineral harvesting (RCL 6+)
@@ -183,6 +201,11 @@ class DecisionTree {
                 builder: Math.max(0, targetBuilders - (creepCounts.builder || 0)),
                 miner: Math.max(0, targetMiners - (creepCounts.miner || 0))
             };
+
+            // In critical starvation, do not add more builders to spawn queue.
+            if (isEmergencyEnergy) {
+                needs.builder = 0;
+            }
             
             // EMERGENCY: If we have less than 1 harvester, CRITICAL PRIORITY
             if ((creepCounts.harvester || 0) < 1) {
@@ -197,6 +220,12 @@ class DecisionTree {
                 console.log(`[Strategy] ${roomName} (RCL ${rcl}): ${totalCreeps} creeps - needs H:${needs.harvester} Hauler:${needs.hauler} U:${needs.upgrader} B:${needs.builder}`);
                 if (energyPercent < 0.3) {
                     console.log(`  ⚠️ Low energy (${(energyPercent*100).toFixed(0)}%) - reduced builder/upgrader spawns`);
+                }
+                if (isRecoveryMode) {
+                    console.log('  🩺 Recovery mode active: upgrader throttled, hauler surge enabled');
+                }
+                if (recovery.stateChanged) {
+                    console.log(`  🔁 Recovery mode ${recovery.active ? 'ENABLED' : 'DISABLED'} (${recovery.reason})`);
                 }
             }
             
@@ -310,12 +339,124 @@ class DecisionTree {
             harvester: () => this.buildBody(energyAvailable, [WORK, WORK, CARRY, MOVE]),
             upgrader: () => this.buildBody(energyAvailable, [WORK, CARRY, MOVE]),
             builder: () => this.buildBody(energyAvailable, [WORK, CARRY, MOVE, MOVE]),
-            hauler: () => this.buildBody(energyAvailable, [CARRY, CARRY, MOVE]),
+            // 1:1 ratio improves speed on long source-to-base routes.
+            hauler: () => this.buildBody(energyAvailable, [CARRY, MOVE]),
             defender: () => this.buildBody(energyAvailable, [TOUGH, ATTACK, MOVE]),
             miner: () => this.buildBody(energyAvailable, [WORK, WORK, CARRY, MOVE]) // v3.0: Miner pattern
         };
         
         return templates[role] ? templates[role]() : [WORK, CARRY, MOVE];
+    }
+
+    /**
+     * Stateful recovery mode with hysteresis and cooldown.
+     * Prevents rapid mode flapping when room energy hovers around thresholds.
+     */
+    static updateRecoveryState(room, rcl) {
+        const defaults = {
+            active: false,
+            enteredAt: 0,
+            lastChange: 0,
+            cooldownUntil: 0,
+            lowEnergyStreak: 0,
+            highEnergyStreak: 0,
+            reason: 'initial'
+        };
+
+        if (!Memory.engine.recoveryRooms) {
+            Memory.engine.recoveryRooms = {};
+        }
+
+        const state = Memory.engine.recoveryRooms[room.name] || { ...defaults };
+        const energyPercent = room.energyCapacityAvailable > 0 ? room.energyAvailable / room.energyCapacityAvailable : 0;
+        const spawnFill = this.getSpawnExtensionFillRatio(room);
+
+        const enterEnergyPercent = 0.45;
+        const enterAbsoluteEnergy = 200;
+        const exitEnergyPercent = 0.80;
+        const exitFillPercent = 0.85;
+        const lowStreakNeeded = 5;
+        const highStreakNeeded = 20;
+        const cooldownTicks = 100;
+        const maxRecoveryTicks = 1500;
+
+        // Overcorrection guard: if room is very full for sustained period, force disable.
+        const overfillEnergyPercent = 0.95;
+        const overfillFillPercent = 0.95;
+        const overfillStreakNeeded = 10;
+
+        const lowCondition = rcl >= 5 && (energyPercent < enterEnergyPercent || room.energyAvailable < enterAbsoluteEnergy);
+        const highCondition = energyPercent > exitEnergyPercent && spawnFill > exitFillPercent;
+        const overfillCondition = energyPercent > overfillEnergyPercent && spawnFill > overfillFillPercent;
+
+        state.lowEnergyStreak = lowCondition ? state.lowEnergyStreak + 1 : 0;
+        state.highEnergyStreak = (highCondition || overfillCondition) ? state.highEnergyStreak + 1 : 0;
+
+        let stateChanged = false;
+        let reason = state.reason || 'steady';
+
+        if (!state.active) {
+            if (Game.time >= state.cooldownUntil && state.lowEnergyStreak >= lowStreakNeeded) {
+                state.active = true;
+                state.enteredAt = Game.time;
+                state.lastChange = Game.time;
+                stateChanged = true;
+                reason = `energy low for ${state.lowEnergyStreak} ticks`;
+                console.log(`[Recovery] ${room.name}: ENABLED (${reason})`);
+            }
+        } else {
+            const activeDuration = Game.time - state.enteredAt;
+            const timedOut = activeDuration >= maxRecoveryTicks;
+            const recovered = state.highEnergyStreak >= highStreakNeeded;
+            const overcorrected = state.highEnergyStreak >= overfillStreakNeeded && overfillCondition;
+
+            if (overcorrected) {
+                state.active = false;
+                state.lastChange = Game.time;
+                state.cooldownUntil = Game.time + cooldownTicks;
+                stateChanged = true;
+                reason = `overcorrection guard (${Math.round(energyPercent * 100)}% energy, ${Math.round(spawnFill * 100)}% fill)`;
+                console.log(`[Recovery] ${room.name}: DISABLED (${reason})`);
+            } else if (recovered || timedOut) {
+                state.active = false;
+                state.lastChange = Game.time;
+                state.cooldownUntil = Game.time + cooldownTicks;
+                stateChanged = true;
+                reason = timedOut ? `timeout ${activeDuration} ticks` : `stable recovery for ${state.highEnergyStreak} ticks`;
+                console.log(`[Recovery] ${room.name}: DISABLED (${reason})`);
+            }
+        }
+
+        state.reason = reason;
+        Memory.engine.recoveryRooms[room.name] = state;
+
+        return {
+            active: state.active,
+            emergency: room.energyAvailable < 100,
+            stateChanged,
+            reason,
+            energyPercent,
+            spawnFill,
+            lowEnergyStreak: state.lowEnergyStreak,
+            highEnergyStreak: state.highEnergyStreak,
+            cooldownUntil: state.cooldownUntil,
+            enteredAt: state.enteredAt,
+            lastChange: state.lastChange
+        };
+    }
+
+    static getSpawnExtensionFillRatio(room) {
+        const structures = room.find(FIND_MY_STRUCTURES, {
+            filter: s => s.structureType === STRUCTURE_SPAWN || s.structureType === STRUCTURE_EXTENSION
+        });
+
+        if (structures.length === 0) return 1;
+
+        const totalCap = structures.reduce((sum, s) => sum + s.store.getCapacity(RESOURCE_ENERGY), 0);
+        if (totalCap <= 0) return 1;
+
+        const totalEnergy = structures.reduce((sum, s) => sum + s.store[RESOURCE_ENERGY], 0);
+        return totalEnergy / totalCap;
     }
     
     /**
@@ -370,6 +511,16 @@ class DecisionTree {
         for (const roomName in gameState.rooms) {
             const roomEval = gameState.rooms[roomName];
             if (roomEval.control.level >= 4 && roomEval.resources.stored > 50000) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static anyRecoveryActive() {
+        if (!Memory.engine || !Memory.engine.recoveryRooms) return false;
+        for (const roomName in Memory.engine.recoveryRooms) {
+            if (Memory.engine.recoveryRooms[roomName].active) {
                 return true;
             }
         }

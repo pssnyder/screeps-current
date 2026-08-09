@@ -213,4 +213,22 @@ As human owner, keep these controls explicit:
 - Layout forcing: `planStructures()`
 - Continuous visibility: `telemetry(500)` and `releaseAudit()`
 
+## 9) Recovery Mode Guard Rails
+
+Recovery mode now uses stateful hysteresis to prevent oscillation:
+
+- Enter condition:
+  - RCL5+ and low energy persists (below 45% or below 200 absolute energy for 5 ticks)
+
+- Exit condition:
+  - Stable recovery persists (above 80% energy and above 85% spawn/extension fill for 20 ticks)
+
+- Overcorrection protection:
+  - If room overfills (above 95% energy and above 95% fill for 10 ticks), recovery mode is forced off
+
+- Cooldown:
+  - 100-tick re-entry cooldown after mode deactivation to avoid flapping
+
+Use `incidentModeStatus()` to inspect live state, streak counters, and cooldown timers.
+
 This keeps the system collaborative but owner-directed.
