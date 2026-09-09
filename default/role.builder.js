@@ -17,6 +17,37 @@ class RoleBuilder {
             };
         }
         
+        // BIO-INSPIRED: Reference the colony pheromone nest (global home room)
+        const colonyHomeRoom = Memory.colony && Memory.colony.homeRoom;
+        if (!colonyHomeRoom) return;  // Colony not initialized
+        
+        // Initialize homeRoom from colony registry
+        if (!creep.memory.homeRoom) {
+            creep.memory.homeRoom = colonyHomeRoom;
+        }
+
+        if (creep.room.name !== creep.memory.homeRoom) {
+            this.returnToHomeRoom(creep);
+            return;  // Do NOT work in wrong room
+        }
+
+        // Nudge border creeps inward to prevent accidental room transitions.
+        if (creep.pos.x === 0 || creep.pos.x === 49 || creep.pos.y === 0 || creep.pos.y === 49) {
+            creep.moveTo(new RoomPosition(25, 25, creep.memory.homeRoom), {
+                visualizePathStyle: { stroke: '#ffaa00' },
+                reusePath: 5
+            });
+            return;
+        }
+        
+        // PHASE 1: Check for hostile creeps and flee if detected (throttled every 3 ticks)
+        if (Game.time % 3 === 0) {
+            if (this.checkForHostiles(creep)) {
+                this.flee(creep);
+                return; // Abort all other actions
+            }
+        }
+        
         // State machine
         if (creep.memory.working && creep.store[RESOURCE_ENERGY] === 0) {
             creep.memory.working = false;
@@ -28,9 +59,14 @@ class RoleBuilder {
             creep.say('🚧 build');
         }
 
-        // Emergency fallback: pause builder task allocation while economy is starved.
-        // Trigger: room energy below 100 until spawn+extensions are at least 50% full.
-        if (this.shouldPauseBuilding(creep.room)) {
+        // BIO-INSPIRED: During recovery, prioritize CRITICAL infrastructure
+        // (containers, storage, links) over refueling
+        // Only pause if we don't have critical construction sites to work on
+        const hasCriticalSites = this.hasCriticalConstructionSites(creep.room);
+        
+        // Emergency fallback: pause builder task allocation while economy is starved
+        // UNLESS there are critical infrastructure sites to build (containers, storage, links)
+        if (this.shouldPauseBuilding(creep.room) && !hasCriticalSites) {
             this.emergencyRefuel(creep);
             return;
         }
@@ -40,6 +76,19 @@ class RoleBuilder {
         } else {
             this.collectEnergy(creep);
         }
+    }
+    
+    /**
+     * BIO-INSPIRED: Check if room has critical infrastructure sites
+     * These are built even during recovery to bootstrap the economy
+     */
+    static hasCriticalConstructionSites(room) {
+        const criticalSites = room.find(FIND_MY_CONSTRUCTION_SITES, {
+            filter: s => s.structureType === STRUCTURE_CONTAINER ||
+                        s.structureType === STRUCTURE_STORAGE ||
+                        s.structureType === STRUCTURE_LINK
+        });
+        return criticalSites.length > 0;
     }
     
     /**
@@ -131,7 +180,8 @@ class RoleBuilder {
         if (result === ERR_NOT_IN_RANGE) {
             creep.moveTo(target, {
                 visualizePathStyle: { stroke: '#00ffff' },
-                reusePath: 10
+                reusePath: 10,
+                avoidExits: true
             });
         } else if (result === OK) {
             creep.memory.targetId = target.id;
@@ -141,6 +191,7 @@ class RoleBuilder {
     /**
      * Collect energy
      */
+
     static collectEnergy(creep) {
         // Similar to upgrader logic
         let target = null;
@@ -160,7 +211,7 @@ class RoleBuilder {
             const source = creep.pos.findClosestByPath(FIND_SOURCES_ACTIVE);
             if (source) {
                 if (creep.harvest(source) === ERR_NOT_IN_RANGE) {
-                    creep.moveTo(source, { visualizePathStyle: { stroke: '#00ffff' } });
+                    creep.moveTo(source, { visualizePathStyle: { stroke: '#00ffff' }, avoidExits: true });
                 }
             }
             return;
@@ -171,7 +222,8 @@ class RoleBuilder {
         if (result === ERR_NOT_IN_RANGE) {
             creep.moveTo(target, {
                 visualizePathStyle: { stroke: '#00ffff' },
-                reusePath: 10
+                reusePath: 10,
+                avoidExits: true
             });
         }
     }
@@ -216,10 +268,83 @@ class RoleBuilder {
         if (result === ERR_NOT_IN_RANGE) {
             creep.moveTo(target, {
                 visualizePathStyle: { stroke: '#ffaa00' },
-                reusePath: 10
+                reusePath: 10,
+                avoidExits: true
             });
         }
         creep.say('🩺 refuel');
+    }
+
+    static returnToHomeRoom(creep) {
+        const targetRoom = creep.memory.homeRoom;
+        const exitDir = creep.room.findExitTo(targetRoom);
+        if (exitDir === ERR_NO_PATH || exitDir === ERR_INVALID_ARGS) {
+            creep.moveTo(new RoomPosition(25, 25, creep.room.name), {
+                visualizePathStyle: { stroke: '#ffaa00' },
+                reusePath: 10
+            });
+            return;
+        }
+
+        const exit = creep.pos.findClosestByPath(exitDir);
+        if (exit) {
+            creep.moveTo(exit, {
+                visualizePathStyle: { stroke: '#ffaa00' },
+                reusePath: 15
+            });
+            creep.say('🏠 return');
+        }
+    }
+
+    /**
+     * PHASE 1: Check for hostile creeps nearby
+     * Scans 12 squares, returns true if threat detected
+     */
+    static checkForHostiles(creep) {
+        const hostiles = creep.room.find(FIND_HOSTILE_CREEPS, {
+            filter: h => creep.pos.getRangeTo(h) <= 12
+        });
+        
+        if (hostiles.length > 0) {
+            creep.memory.fleeing = true;
+            creep.memory.lastHostileTick = Game.time;
+            return true;
+        }
+        
+        return false;
+    }
+
+    /**
+     * PHASE 1: Flee toward home room
+     * Builders prioritize survival and keeping construction progress safe
+     */
+    static flee(creep) {
+        // If not in home room, flee to home room exit
+        if (creep.room.name !== creep.memory.homeRoom) {
+            this.returnToHomeRoom(creep);
+            creep.say('🏃 flee!');
+            return;
+        }
+        
+        // In home room - flee to spawn or storage
+        let target = creep.room.storage || creep.pos.findClosestByPath(FIND_MY_SPAWNS);
+        
+        if (target) {
+            creep.moveTo(target, {
+                visualizePathStyle: { stroke: '#ff0000' },
+                reusePath: 10,
+                avoidExits: true
+            });
+        } else {
+            // Fallback to room center
+            creep.moveTo(new RoomPosition(25, 25, creep.room.name), {
+                visualizePathStyle: { stroke: '#ff0000' },
+                reusePath: 10,
+                avoidExits: true
+            });
+        }
+        
+        creep.say('🏃 flee!');
     }
 }
 

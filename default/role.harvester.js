@@ -18,6 +18,24 @@ class RoleHarvester {
             };
         }
         
+        // BIO-INSPIRED: Reference the colony pheromone nest (global home room)
+        // All workers use this shared home room registry
+        const colonyHomeRoom = Memory.colony && Memory.colony.homeRoom;
+        if (!colonyHomeRoom) return;  // Colony not initialized
+        
+        // Set individual homeRoom from colony registry (pheromone trail)
+        if (!creep.memory.homeRoom) {
+            creep.memory.homeRoom = colonyHomeRoom;
+        }
+        
+        // PHASE 1: Check for hostile creeps and flee if detected (throttled every 3 ticks)
+        if (Game.time % 3 === 0) {
+            if (this.checkForHostiles(creep)) {
+                this.flee(creep);
+                return; // Abort all other actions
+            }
+        }
+        
         // v2.0.3: Check if we should be a static harvester (RCL 4+)
         const room = creep.room;
         const rcl = room.controller.level;
@@ -221,8 +239,10 @@ class RoleHarvester {
             }
             
             if (!target) {
-                // Last resort: upgrade controller
-                target = creep.room.controller;
+                // Last resort: upgrade controller (only if it's ours)
+                if (creep.room.controller && creep.room.controller.my) {
+                    target = creep.room.controller;
+                }
             }
             
             if (target) {
@@ -252,6 +272,74 @@ class RoleHarvester {
             creep.memory.targetId = null;
         }
     }
+
+    /**
+     * PHASE 1: Check for hostile creeps nearby
+     * Scans 10+ squares, returns true if threat detected
+     */
+    static checkForHostiles(creep) {
+        const hostiles = creep.room.find(FIND_HOSTILE_CREEPS, {
+            filter: h => creep.pos.getRangeTo(h) <= 12
+        });
+        
+        if (hostiles.length > 0) {
+            creep.memory.fleeing = true;
+            creep.memory.lastHostileTick = Game.time;
+            return true;
+        }
+        
+        return false;
+    }
+
+    /**
+     * PHASE 1: Flee toward home/safety
+     * Priority: 1) Spawn/Storage, 2) Room center, 3) Away from hostiles
+     */
+    static flee(creep) {
+        // Find nearest exit or spawn to flee toward
+        let target = null;
+        
+        // Priority 1: Spawn (safest zone)
+        const spawn = creep.pos.findClosestByPath(FIND_MY_SPAWNS);
+        if (spawn) {
+            target = spawn;
+        } else {
+            // Priority 2: Storage
+            if (creep.room.storage) {
+                target = creep.room.storage;
+            } else {
+                // Priority 3: Room center
+                target = new RoomPosition(25, 25, creep.room.name);
+            }
+        }
+        
+        creep.moveTo(target, {
+            visualizePathStyle: { stroke: '#ff0000' },
+            reusePath: 10,
+            avoidExits: true
+        });
+        
+        creep.say('🏃 flee!');
+    }
+
+    /**
+     * Return home using native pathfinding
+     * moveTo() automatically handles multi-room paths - no complex state machine needed
+     */
+    static returnToHomeRoom(creep) {
+        const homeRoom = creep.memory.homeRoom;
+        if (!homeRoom || creep.room.name === homeRoom) return;
+        
+        // Use native pathfinding to home room position
+        // This automatically finds paths across room boundaries
+        creep.moveTo(new RoomPosition(25, 25, homeRoom), {
+            visualizePathStyle: { stroke: '#ffaa00' },
+            reusePath: 10,
+            avoidExits: false  // Allow room transitions
+        });
+    }
+
+
 }
 
 module.exports = RoleHarvester;

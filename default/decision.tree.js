@@ -141,10 +141,12 @@ class DecisionTree {
                 targetHaulers = 1; // 1 hauler at RCL 2-3
             }
 
-            // Emergency logistics recovery: force two additional haulers immediately.
-            // This creates a near-term delivery burst for long-haul source routes.
+            // Emergency logistics recovery: add a bounded boost, never "current + N"
+            // to avoid runaway over-spawning.
             if (isRecoveryMode) {
-                targetHaulers = Math.max(targetHaulers, (creepCounts.hauler || 0) + 2);
+                const recoveryBoost = hasContainers ? 2 : 0;
+                const hardCap = Math.max(2, sourceCount * 2 + 1);
+                targetHaulers = Math.min(targetHaulers + recoveryBoost, hardCap);
             }
             
             // Builder count: scale with construction sites and energy
@@ -258,16 +260,58 @@ class DecisionTree {
                     console.log(`[Defense] Skipping defender spawn - economy too weak (${creepCounts.harvester || 0} harvesters)`);
                 }
             }
+
+            // Cross-room expansion: detect harvesters working in adjacent rooms
+            if (room) {
+                const harvestersInAdjacentRooms = this.findHarvestersInAdjacentRooms(room);
+                
+                if (harvestersInAdjacentRooms.length > 0) {
+                    // Spawn sentinels to protect harvesters (1 per 2 harvesters)
+                    const currentSentinels = creepCounts.sentinel || 0;
+                    const targetSentinels = Math.ceil(harvestersInAdjacentRooms.length / 2);
+                    needs.sentinel = Math.max(0, targetSentinels - currentSentinels);
+                    
+                    // Find the adjacent room and check if we should claim it
+                    const adjacentRoomName = harvestersInAdjacentRooms[0].memory.room || harvestersInAdjacentRooms[0].room.name;
+                    const adjacentRoom = Game.rooms[adjacentRoomName];
+                    
+                    if (adjacentRoom && adjacentRoom.controller) {
+                        const shouldClaimAdjacentRoom = !adjacentRoom.controller.my && !adjacentRoom.controller.owner;
+                        
+                        if (shouldClaimAdjacentRoom) {
+                            // Only claim if we have stable economy (energy > 30%)
+                            if (energyPercent > 0.30 && !isRecoveryMode) {
+                                const currentClaimers = creepCounts.claimer || 0;
+                                needs.claimer = Math.max(0, 1 - currentClaimers);
+                                
+                                if (Game.time % 50 === 0) {
+                                    console.log(`[Expansion] Harvesters in ${adjacentRoomName} - spawning claimer to claim room`);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             
             // Convert needs to spawn queue
             for (const role in needs) {
                 if (needs[role] > 0) {
-                    decisions.push({
+                    const decision = {
                         room: roomName,
                         role: role,
                         priority: this.getSpawnPriority(role, needs),
                         body: room ? this.generateOptimalBody(role, room) : [WORK, CARRY, MOVE]
-                    });
+                    };
+                    
+                    // For claimers, set the target room
+                    if (role === 'claimer' && room) {
+                        const adjacent = this.findHarvestersInAdjacentRooms(room);
+                        if (adjacent.length > 0) {
+                            decision.targetRoom = adjacent[0].room.name;
+                        }
+                    }
+                    
+                    decisions.push(decision);
                 }
             }
         }
@@ -278,6 +322,23 @@ class DecisionTree {
         return decisions;
     }
     
+    /**
+     * Find harvesters that are working in adjacent rooms (cross-room harvesting)
+     */
+    static findHarvestersInAdjacentRooms(room) {
+        const adjacent = [];
+        for (const name in Game.creeps) {
+            const creep = Game.creeps[name];
+            if (creep.memory.role === 'harvester' && creep.memory.room === room.name) {
+                // Creep is assigned to this room, but check if physically elsewhere
+                if (creep.room.name !== room.name) {
+                    adjacent.push(creep);
+                }
+            }
+        }
+        return adjacent;
+    }
+
     /**
      * Count creeps by role assigned to a room
      * Counts ALL creeps assigned to the room, not just those physically in it
@@ -301,11 +362,14 @@ class DecisionTree {
      * Determine spawn priority for a role
      * v2.0.3: Boost hauler priority at RCL 4+ (containers need haulers)
      * v3.0: Add miner priority (medium-low, after economy stabilizes)
+     * v3.2: Add sentinel and claimer priorities for expansion
      */
     static getSpawnPriority(role, needs) {
         const priorities = {
             harvester: 10,  // Highest - economy is critical
+            sentinel: 9.5,  // v3.2: High priority - protect harvesters in danger
             defender: 9,    // Defense is crucial
+            claimer: 8.5,   // v3.2: High - claim rooms for expansion
             miner: 4,       // v3.0: Medium-low priority (after economy stable)
             hauler: 8,      // v2.0.3: Increased from 7 (critical at RCL 4+)
             upgrader: 6,    // Important but not urgent
@@ -342,6 +406,8 @@ class DecisionTree {
             // 1:1 ratio improves speed on long source-to-base routes.
             hauler: () => this.buildBody(energyAvailable, [CARRY, MOVE]),
             defender: () => this.buildBody(energyAvailable, [TOUGH, ATTACK, MOVE]),
+            sentinel: () => this.buildBody(energyAvailable, [RANGED_ATTACK, RANGED_ATTACK, MOVE, MOVE, TOUGH, TOUGH]),
+            claimer: () => this.buildBody(energyAvailable, [TOUGH, TOUGH, CLAIM, MOVE, MOVE]),
             miner: () => this.buildBody(energyAvailable, [WORK, WORK, CARRY, MOVE]) // v3.0: Miner pattern
         };
         

@@ -2,9 +2,39 @@
  * MEMORY MANAGER
  * 
  * Manages persistent state and cleans up dead objects
+ * Bio-inspired: Uses pheromone-like memory trails for colony-wide communication
  */
 
 class MemoryManager {
+    /**
+     * Initialize colony-wide pheromone registry (the "nest")
+     * All workers reference this to know home room
+     */
+    static initColonyRegistry() {
+        if (!Memory.colony) {
+            Memory.colony = {};
+        }
+        
+        // The "pheromone nest" - all workers know this is home
+        if (!Memory.colony.homeRoom) {
+            const mySpawns = Object.values(Game.spawns);
+            if (mySpawns.length > 0) {
+                Memory.colony.homeRoom = mySpawns[0].room.name;
+                console.log(`🏠 [Colony] Home room registry established: ${Memory.colony.homeRoom}`);
+            }
+        }
+        
+        // Track worker rooms (where we actively harvest)
+        if (!Memory.colony.workerRooms) {
+            Memory.colony.workerRooms = {};
+        }
+        
+        // Track pheromone trails (good paths discovered by workers)
+        if (!Memory.colony.pheromones) {
+            Memory.colony.pheromones = {};  // routeName: {path: [], lastUsed: tick, efficiency: 0-1}
+        }
+    }
+    
     /**
      * Clean up memory of dead creeps - v3.0 enhanced
      * TIPS: "The creep memory is saved upon death, so clear Memory.creeps.* to prevent overflowing."
@@ -27,12 +57,20 @@ class MemoryManager {
      * Initialize creep memory with defaults
      */
     static initCreep(creep, role, targetRoom = null) {
+        // Determine home room: for workers, it's the spawn room they're being created in
+        let homeRoom = creep.room.name;
+        const mySpawns = Object.values(Game.spawns);
+        if (mySpawns.length > 0) {
+            homeRoom = mySpawns[0].room.name;  // Use main spawn room
+        }
+        
         creep.memory = {
             role: role,
             working: false,
             targetRoom: targetRoom,
             sourceId: null,
             targetId: null,
+            homeRoom: homeRoom,  // Set home room immediately
             born: Game.time,
             stats: {
                 energyHarvested: 0,

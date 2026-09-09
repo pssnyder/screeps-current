@@ -69,7 +69,12 @@ module.exports.loop = function() {
                 upgrader: '⚡',
                 builder: '🔨',
                 hauler: '🚚',
-                defender: '⚔️'
+                defender: '⚔️',
+                sentinel: '🛡️',
+                claimer: '🚩',
+                scout: '🔍',
+                pioneer: '🏕️',
+                miner: '💎'
             };
             
             spawn.room.visual.text(

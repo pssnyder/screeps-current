@@ -47,7 +47,10 @@ class ConsoleHelper {
         console.log('  debug()              - Simulation diagnostics');
         console.log('  planStructures()     - Force structure planning');
         console.log('  killAll(role)        - Kill all creeps of role');
+        console.log('  resetHarvesters()    - Reset stuck harvesters to harvest mode');
+        console.log('  colonyStatus()       - Show pheromone nest (colony registry)');
         console.log('  Memory.engine        - View engine memory');
+        console.log('  Memory.colony        - View colony pheromone registry');
         console.log('  clear()              - Clear screen');
         console.log('═══════════════════════════════════════════');
     }
@@ -710,6 +713,75 @@ class ConsoleHelper {
         
         console.log(`💀 Killed ${killed} ${role}(s)`);
     }
+
+    /**
+     * Reset stuck harvester memories (clears working state, targetId, forces harvest mode)
+     * Usage: resetHarvesters() - resets all stuck harvesters
+     */
+    static resetHarvesters() {
+        let reset = 0;
+        for (const name in Game.creeps) {
+            const creep = Game.creeps[name];
+            if (creep.memory.role === 'harvester') {
+                // Force harvest mode
+                creep.memory.working = false;
+                creep.memory.targetId = null;
+                creep.say('🔄 RESET');
+                reset++;
+            }
+        }
+        
+        console.log(`🔧 Reset ${reset} harvester(s) to harvest mode`);
+        console.log('   - Cleared working flag');
+        console.log('   - Cleared targetId');
+        console.log('   - They will return home on next tick if in wrong room');
+    }
+
+    /**
+     * Show colony-wide pheromone registry (nest location & worker rooms)
+     */
+    static colonyStatus() {
+        const colony = Memory.colony;
+        
+        console.log('═══════════════════════════════════════════');
+        console.log('🐜 COLONY PHEROMONE REGISTRY (Bio-Inspired)');
+        console.log('═══════════════════════════════════════════');
+        
+        if (!colony) {
+            console.log('❌ Colony registry not initialized');
+            return;
+        }
+        
+        console.log(`🏠 Home Room (Pheromone Nest): ${colony.homeRoom || 'UNKNOWN'}`);
+        console.log('');
+        
+        if (colony.workerRooms && Object.keys(colony.workerRooms).length > 0) {
+            console.log(`👷 Worker Rooms (${Object.keys(colony.workerRooms).length}):`);
+            for (const room in colony.workerRooms) {
+                console.log(`   - ${room}`);
+            }
+        } else {
+            console.log('👷 Worker Rooms: None configured');
+        }
+        
+        console.log('');
+        
+        // Show creeps referencing the registry
+        let harvesterCount = 0, haulerCount = 0, builderCount = 0;
+        for (const name in Game.creeps) {
+            const creep = Game.creeps[name];
+            if (creep.memory.homeRoom === colony.homeRoom) {
+                if (creep.memory.role === 'harvester') harvesterCount++;
+                if (creep.memory.role === 'hauler') haulerCount++;
+                if (creep.memory.role === 'builder') builderCount++;
+            }
+        }
+        
+        console.log('📊 Creeps Using Pheromone Registry:');
+        console.log(`   Harvesters: ${harvesterCount}`);
+        console.log(`   Haulers: ${haulerCount}`);
+        console.log(`   Builders: ${builderCount}`);
+    }
     
     /**
      * Spawn a scout creep to explore rooms
@@ -876,6 +948,8 @@ global.creeps = () => ConsoleHelper.creeps();
 global.debug = () => ConsoleHelper.debug();
 global.planStructures = () => ConsoleHelper.planStructures();
 global.killAll = (role) => ConsoleHelper.killAll(role);
+global.resetHarvesters = () => ConsoleHelper.resetHarvesters();
+global.colonyStatus = () => ConsoleHelper.colonyStatus();
 global.clear = () => ConsoleHelper.clear();
 global.kill = (name) => ConsoleHelper.kill(name);
 global.scout = (...rooms) => ConsoleHelper.scout(...rooms);

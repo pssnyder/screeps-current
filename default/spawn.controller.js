@@ -37,7 +37,7 @@ class SpawnController {
             
             if (result === OK) {
                 console.log(`[Spawn] ${room.name}: Creating ${decision.role} - ${newName}`);
-                MemoryManager.initCreep(Game.creeps[newName], decision.role);
+                MemoryManager.initCreep(Game.creeps[newName], decision.role, decision.targetRoom || null);
             } else if (result === ERR_NOT_ENOUGH_ENERGY) {
                 // Try with smaller body if not enough energy
                 const smallerBody = this.scaleDownBody(decision.body, room.energyAvailable);
@@ -47,7 +47,7 @@ class SpawnController {
                     });
                     if (result2 === OK) {
                         console.log(`[Spawn] ${room.name}: Creating reduced ${decision.role} - ${newName}`);
-                        MemoryManager.initCreep(Game.creeps[newName], decision.role);
+                        MemoryManager.initCreep(Game.creeps[newName], decision.role, decision.targetRoom || null);
                     }
                 }
             }

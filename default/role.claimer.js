@@ -11,11 +11,18 @@ class RoleClaimer {
     
     /**
      * Run claimer behavior
+     * PHASE 2: After claiming, switch to martyr mode (decoy)
      */
     static run(creep) {
         // Validate target room is set
         if (!creep.memory.targetRoom) {
             console.log(`⚠️ Claimer ${creep.name} has no target room assigned`);
+            return;
+        }
+        
+        // PHASE 2: If in martyr mode, handle it here
+        if (creep.memory.martyr) {
+            this.executeMartyr(creep);
             return;
         }
         
@@ -54,6 +61,13 @@ class RoleClaimer {
         if (controller.my) {
             console.log(`✅ Controller in ${targetRoom} already claimed!`);
             
+            // PHASE 2: Switch to martyr mode instead of suiciding
+            if (!creep.memory.martyr) {
+                console.log(`💀 Claimer ${creep.name} entering martyr mode to protect workers`);
+                creep.memory.martyr = true;
+                creep.memory.martyrStartedAt = Game.time;
+            }
+            
             // Sign the controller with custom message
             if (creep.memory.signText && !controller.sign) {
                 if (creep.signController(controller, creep.memory.signText) === ERR_NOT_IN_RANGE) {
@@ -62,9 +76,8 @@ class RoleClaimer {
                     });
                 }
             } else {
-                // Mission complete, suicide
-                console.log(`🎉 Claimer ${creep.name} mission complete - suiciding`);
-                creep.suicide();
+                // Switch to martyr mode (continue to executeMartyr)
+                this.executeMartyr(creep);
             }
             return;
         }
@@ -113,6 +126,65 @@ class RoleClaimer {
         } else {
             console.log(`❌ Failed to claim ${targetRoom}: ${result}`);
             creep.memory.failed = true;
+        }
+    }
+    
+    /**
+     * PHASE 2: Martyr mode - act as decoy to protect workers
+     * Patrols claimed room and intercepts threats
+     */
+    static executeMartyr(creep) {
+        const claimedRoom = Game.rooms[creep.memory.targetRoom];
+        
+        if (!claimedRoom) return; // Room not visible
+        
+        // Check for hostile creeps
+        const hostiles = claimedRoom.find(FIND_HOSTILE_CREEPS);
+        
+        if (hostiles.length > 0) {
+            // Move toward closest hostile to draw aggro
+            const threat = creep.pos.findClosestByRange(hostiles);
+            if (threat) {
+                creep.moveTo(threat, {
+                    visualizePathStyle: { stroke: '#ff0000' },
+                    reusePath: 3
+                });
+                creep.say('💀 martyr');
+            }
+            return;
+        }
+        
+        // No threats - patrol near claimed room center
+        if (!creep.memory.martyrPatrolTarget) {
+            creep.memory.martyrPatrolTarget = { x: 25, y: 25 };
+        }
+        
+        // Move to patrol position
+        if (creep.room.name !== creep.memory.targetRoom) {
+            // Move to claimed room
+            const exitDir = creep.room.findExitTo(creep.memory.targetRoom);
+            if (exitDir !== ERR_NO_PATH) {
+                const exit = creep.pos.findClosestByPath(exitDir);
+                if (exit) {
+                    creep.moveTo(exit, {
+                        visualizePathStyle: { stroke: '#ffaa00' },
+                        reusePath: 15
+                    });
+                    creep.say('🏃 patrol');
+                }
+            }
+        } else {
+            // In claimed room - patrol
+            const patrolPos = new RoomPosition(25, 25, creep.room.name);
+            if (creep.pos.getRangeTo(patrolPos) > 3) {
+                creep.moveTo(patrolPos, {
+                    visualizePathStyle: { stroke: '#0088ff' },
+                    reusePath: 15
+                });
+                creep.say('🚔 patrol');
+            } else {
+                creep.say('💀 ready');
+            }
         }
     }
     

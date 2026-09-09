@@ -6,6 +6,8 @@
  * - Move generation
  * - Search algorithms
  * - Best move selection
+ * 
+ * v4.0.0 - Traffic-aware road planning (pheromone layer system)
  */
 
 const Evaluator = require('./evaluator');
@@ -16,6 +18,8 @@ const TowerController = require('./tower.controller');
 const StructurePlanner = require('./structure.planner');
 const LinkManager = require('./link.manager');
 const ExpansionManager = require('./expansion.manager');
+const MemoryManager = require('./memory.manager');
+const TrafficTracker = require('./traffic.tracker');
 
 class EngineCore {
     /**
@@ -23,6 +27,9 @@ class EngineCore {
      * This is called every game tick
      */
     static run() {
+        // BIO-INSPIRED: Initialize colony-wide pheromone registry (the "nest")
+        MemoryManager.initColonyRegistry();
+        
         // Phase 1: Evaluate current position (like chess position evaluation)
         const gameState = this.evaluateGameState();
         
@@ -35,10 +42,14 @@ class EngineCore {
             
             if (!room.controller || !room.controller.my) continue;
             
+            // ★ NEW: Update traffic heatmap for intelligent road planning
+            // This runs every tick and is lightweight (decays over time)
+            TrafficTracker.updateTraffic(room);
+            
             // Evaluate room position
             const roomEval = Evaluator.evaluateRoom(room);
             
-            // Auto-plan structures (v1.1)
+            // Auto-plan structures (v4.0.0: includes traffic-aware roads)
             StructurePlanner.run(room);
             
             // Manage link transfers (v3.1, throttled)

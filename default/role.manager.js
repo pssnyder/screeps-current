@@ -14,6 +14,7 @@ const RoleMiner = require('./role.miner');
 const RoleScout = require('./role.scout');
 const RoleClaimer = require('./role.claimer');
 const RolePioneer = require('./role.pioneer');
+const RoleSentinel = require('./role.sentinel');
 
 class RoleManager {
     /**
@@ -57,6 +58,9 @@ class RoleManager {
                     break;
                 case 'pioneer':
                     RolePioneer.run(creep);
+                    break;
+                case 'sentinel':
+                    RoleSentinel.run(creep, strategy);
                     break;
                 default:
                     console.log(`[Warning] Unknown role: ${role} for ${creep.name}`);

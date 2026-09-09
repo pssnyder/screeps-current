@@ -2,62 +2,91 @@
  * STRUCTURE PLANNER
  * 
  * Automatically plans and places construction sites for optimal room layout
- * v2.0.1 - Priority-based planning (critical structures first)
+ * v4.0.0 - Traffic-aware road planning (pheromone arteries)
+ * 
+ * Road design:
+ * - PathFinder prefers roads (cost 1) over plain (cost 1) and swamp (cost 5)
+ * - Main arteries: spawn→sources, spawn→storage, storage→controller
+ * - Roads on swamp save 5x energy compared to roads on plain
+ * - Traffic tracker identifies high-traffic corridors for optimal placement
  */
+
+const TrafficTracker = require('./traffic.tracker');
 
 class StructurePlanner {
     /**
      * Plan and place construction sites for a room
-     * v2.0.1: Plan critical structures (extensions, towers) before roads
-     * v3.1.0: Added link support for RCL 5+
+     * v4.0.0: Intelligent road planning based on traffic patterns
+     * 
+     * NEW PRIORITY ORDER:
+     * 1. Extensions (energy capacity)
+     * 2. Towers (defense)
+     * 2.5. Traffic-aware arteries (spawn↔sources↔storage↔controller)
+     * 3. Links (RCL 5+)
+     * 4. Containers (energy logistics)
+     * 5. Storage (game-changer at RCL 4+)
+     * 6. RCL 6+ infrastructure
+     * 7. Random optimization roads
      */
     static run(room) {
-        // Only plan once every 100 ticks
-        if (Game.time % 100 !== 0) return;
+        // Only plan once every 100 ticks (but roads more often if needed)
+        const planFrequency = Game.time % 100 === 0;
+        const planRoadsFrequency = Game.time % 25 === 0; // Check roads more often
+        
+        if (!planFrequency && !planRoadsFrequency) return;
+        
+        // Update traffic heatmap every tick (lightweight operation)
+        TrafficTracker.updateTraffic(room);
         
         const rcl = room.controller.level;
         const existingSites = room.find(FIND_MY_CONSTRUCTION_SITES);
         
         // PRIORITY 1: Extensions (critical for energy capacity)
-        if (rcl >= 2 && existingSites.length < 10) {
+        if (planFrequency && rcl >= 2 && existingSites.length < 10) {
             this.planExtensions(room);
         }
         
         // PRIORITY 2: Towers (critical for defense at RCL 3+)
-        if (rcl >= 3 && existingSites.length < 10) {
+        if (planFrequency && rcl >= 3 && existingSites.length < 10) {
             this.planTower(room);
         }
         
-        // PRIORITY 2.5: Links (GAME-CHANGER at RCL 5+)
-        if (rcl >= 5 && existingSites.length < 10) {
+        // ★ PRIORITY 2.5: STRATEGIC ROADS (ARTERIES - THE PHEROMONE LAYER)
+        // These are the main highways - pathfinder naturally prefers them
+        // Plan MORE FREQUENTLY than other structures (every 25 ticks, not 100)
+        if (planRoadsFrequency && existingSites.length < 8) {
+            this.planStrategicRoads(room);  // Main arteries first!
+        }
+        
+        // PRIORITY 3: Links (GAME-CHANGER at RCL 5+)
+        if (planFrequency && rcl >= 5 && existingSites.length < 10) {
             this.planLinks(room);
         }
         
-        // PRIORITY 3: Containers (important for economy)
-        if (rcl >= 2 && existingSites.length < 10) {
+        // PRIORITY 4: Containers (important for economy)
+        if (planFrequency && rcl >= 2 && existingSites.length < 10) {
             this.planContainers(room);
         }
         
-        // PRIORITY 4: Storage (game-changer at RCL 4+)
-        if (rcl >= 4 && existingSites.length < 10) {
+        // PRIORITY 5: Storage (game-changer at RCL 4+)
+        if (planFrequency && rcl >= 4 && existingSites.length < 10) {
             this.planStorage(room);
         }
         
-        // PRIORITY 4.5: RCL 6 Critical Infrastructure
-        if (rcl >= 6 && existingSites.length < 10) {
+        // PRIORITY 5.5: RCL 6 Critical Infrastructure
+        if (planFrequency && rcl >= 6 && existingSites.length < 10) {
             this.planExtractor(room);    // Required for minerals
             this.planTerminal(room);      // Required for market
         }
         
-        // PRIORITY 4.8: Labs (RCL 6+ advanced)
-        if (rcl >= 6 && existingSites.length < 5) {
+        // PRIORITY 5.8: Labs (RCL 6+ advanced)
+        if (planFrequency && rcl >= 6 && existingSites.length < 5) {
             this.planLabs(room);
         }
         
-        // PRIORITY 5: Roads (nice to have, but not critical)
-        // Only plan roads if we have < 5 sites total
-        if (existingSites.length < 5) {
-            this.planRoads(room);
+        // PRIORITY 6: Optimization roads (fill in gaps after arteries)
+        if (planRoadsFrequency && existingSites.length < 5) {
+            this.planOptimizationRoads(room);
         }
     }
     
@@ -238,63 +267,168 @@ class StructurePlanner {
     }
     
     /**
-     * Plan roads between key structures
+     * Plan STRATEGIC ROADS (Arteries)
+     * 
+     * These are high-priority roads on main traffic corridors:
+     * - Spawn ↔ Sources (energy collection)
+     * - Spawn/Sources ↔ Storage (energy logistics)
+     * - Storage ↔ Controller (upgrading)
+     * 
+     * PathFinder naturally prefers roads, so these become the pheromone layer
      */
-    static planRoads(room) {
-        // Only plan roads if we have enough CPU
-        if (Game.cpu.bucket < 5000) return;
+    static planStrategicRoads(room) {
+        if (Game.cpu.bucket < 3000) return;
         
         const spawns = room.find(FIND_MY_SPAWNS);
         if (spawns.length === 0) return;
         
         const spawn = spawns[0];
         const sources = room.find(FIND_SOURCES);
+        const storage = room.storage;
         const controller = room.controller;
         
-        // Plan roads to sources
+        // Get existing road count
+        const roadSites = room.find(FIND_MY_CONSTRUCTION_SITES, {
+            filter: s => s.structureType === STRUCTURE_ROAD
+        });
+        
+        if (roadSites.length > 15) return; // Don't plan too many at once
+        
+        // Arteries by priority
+        const arteries = [];
+        
+        // Artery 1: Spawn → Each Source (critical for energy)
+        // Priority: 100 (highest)
         for (const source of sources) {
-            this.planRoadPath(room, spawn.pos, source.pos);
+            arteries.push({from: spawn.pos, to: source.pos, priority: 100, label: `spawn→src`});
         }
         
-        // Plan road to controller
-        if (controller) {
-            this.planRoadPath(room, spawn.pos, controller.pos);
+        // Artery 2: Sources → Storage (if storage exists)
+        // Priority: 90
+        if (storage) {
+            for (const source of sources) {
+                arteries.push({from: source.pos, to: storage.pos, priority: 90, label: `src→storage`});
+            }
+            // Also direct spawn → storage
+            arteries.push({from: spawn.pos, to: storage.pos, priority: 85, label: `spawn→storage`});
+        }
+        
+        // Artery 3: Storage → Controller (if both exist)
+        // Priority: 80
+        if (storage && controller) {
+            arteries.push({from: storage.pos, to: controller.pos, priority: 80, label: `storage→ctrl`});
+        }
+        
+        // Sort by priority
+        arteries.sort((a, b) => b.priority - a.priority);
+        
+        // Plan roads on each artery (skip ones that already have enough roads)
+        let placed = 0;
+        for (const artery of arteries) {
+            if (placed >= 2) break; // Only place 2 per tick to avoid spam
+            if (roadSites.length + placed >= 15) break;
+            
+            placed += this.planRoadPath(room, artery.from, artery.to, artery.label);
+        }
+    }
+    
+    /**
+     * Plan OPTIMIZATION ROADS (fill-ins)
+     * After arteries are built, fill in secondary roads
+     */
+    static planOptimizationRoads(room) {
+        if (Game.cpu.bucket < 2000) return;
+        
+        const sources = room.find(FIND_SOURCES);
+        if (sources.length < 2) return; // Only useful with multiple sources
+        
+        // Connect multiple sources to each other
+        for (let i = 0; i < sources.length - 1; i++) {
+            for (let j = i + 1; j < sources.length; j++) {
+                this.planRoadPath(room, sources[i].pos, sources[j].pos, `src→src`);
+            }
         }
     }
     
     /**
      * Plan a road path between two positions
+     * Prioritizes swamp tiles (5x energy savings)
+     * Returns number of roads placed
      */
-    static planRoadPath(room, from, to) {
-        // Only plan a few roads at a time
+    static planRoadPath(room, from, to, label = '') {
+        // Get existing road count
         const roadSites = room.find(FIND_MY_CONSTRUCTION_SITES, {
             filter: s => s.structureType === STRUCTURE_ROAD
         });
         
-        if (roadSites.length > 10) return;
+        if (roadSites.length > 20) return 0;
         
         const path = room.findPath(from, to, {
             ignoreCreeps: true,
-            ignoreRoads: false
+            ignoreRoads: false,
+            maxOps: 200
         });
         
-        // Place roads on path (limit to 3 per run)
-        let placed = 0;
+        if (!path || path.length === 0) return 0;
+        
+        const terrain = room.getTerrain();
+        const existingRoads = room.find(FIND_STRUCTURES, {
+            filter: s => s.structureType === STRUCTURE_ROAD
+        });
+        const roadSet = new Set();
+        for (const road of existingRoads) {
+            roadSet.add(`${road.pos.x},${road.pos.y}`);
+        }
+        
+        // Separate path into swamp and plain tiles (swamp = higher priority)
+        const swampPositions = [];
+        const plainPositions = [];
+        
         for (const step of path) {
-            if (placed >= 3) break;
+            const key = `${step.x},${step.y}`;
+            if (roadSet.has(key)) continue; // Already has road
             
-            // Don't place on structures
+            // Check for structures/sites
             const structures = room.lookForAt(LOOK_STRUCTURES, step.x, step.y);
             if (structures.length > 0) continue;
             
             const sites = room.lookForAt(LOOK_CONSTRUCTION_SITES, step.x, step.y);
             if (sites.length > 0) continue;
             
-            const result = room.createConstructionSite(step.x, step.y, STRUCTURE_ROAD);
+            // Separate by terrain
+            const terrainType = terrain.get(step.x, step.y);
+            if (terrainType === TERRAIN_MASK_SWAMP) {
+                swampPositions.push(step);
+            } else if (terrainType === 0) {  // Plain
+                plainPositions.push(step);
+            }
+            // Skip walls
+        }
+        
+        // Place roads: SWAMP FIRST (5x energy savings!)
+        let placed = 0;
+        const maxPerRun = 3;
+        
+        // Priority: swamp tiles first
+        for (const pos of swampPositions) {
+            if (placed >= maxPerRun) break;
+            const result = room.createConstructionSite(pos.x, pos.y, STRUCTURE_ROAD);
+            if (result === OK) {
+                placed++;
+                if (label) console.log(`🛣️ [Planner] Road on swamp: ${label}`);
+            }
+        }
+        
+        // Then plain tiles
+        for (const pos of plainPositions) {
+            if (placed >= maxPerRun) break;
+            const result = room.createConstructionSite(pos.x, pos.y, STRUCTURE_ROAD);
             if (result === OK) {
                 placed++;
             }
         }
+        
+        return placed;
     }
     
     /**
